@@ -1,5 +1,5 @@
-<<<<<<< HEAD
-# PML_project
+
+# Practical Machine Learning project
 =======
 # http://davetharris.github.io/PML_Project
->>>>>>> 7d305505d68b6131c386817c6856d7a2b4b953c5
+
