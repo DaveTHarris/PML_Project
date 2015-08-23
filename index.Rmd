@@ -1,0 +1,163 @@
+---
+title: "Practical Machine Learning Project"
+author: "David Harris"
+date: "August 22, 2015"
+output: html_document
+---
+##Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project I use a random forest training algorithm on data obtained from accelerometers on the belt, forearm, arm, and dumbell to predict how well a participant is performing a curl. The final model predicts with a predicted out-of-sample error rate of less than one percent. Furthermore, I show that a second random forest training algorithm using data obtained from sensors on only the belt and forearm can achieve a similar accuracy.
+
+##Pre-processing
+The first step in this process is to download and load the data we will be using for our training and our testing.
+Here I load the relevant libraries for the analysis, and I read in the downloaded data. 
+```{r, cache = FALSE, echo = TRUE, message = FALSE}
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(corrplot)
+```
+```{r, cache = TRUE, echo = TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","training.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "test.csv")
+train<-read.csv("training.csv",na.strings=c("NA","#DIV/0!",""))
+test<-read.csv("test.csv",na.strings=c("NA","#DIV/0!",""))
+```
+
+If we take a look at the dimensions of the training set we can see that there are `r dim(train)[1]` observations on `r dim(train)[2]` variables.
+
+But how many of these fields actually contain data?
+```{r, echo = TRUE, results = 'markup'}
+table(is.na(train))
+
+```
+
+This shows that there are more "NA" fields than there are actual data.
+
+
+I only want to use columns that actually have data in them, so I somewhat arbitrarily chose a cutoff of 80% and only kept those columns that are less than 80% "NA".
+
+```{r, echo = TRUE, results = 'markup'}
+keepcolumns<-which(colSums(is.na(train))<dim(train)[1]*.8)
+train<-train[,keepcolumns]
+test<-test[,keepcolumns]
+dim(train)
+```
+
+This got the number of variables down to `r dim(train)[2]`.
+
+Now if I take a look at the remaining variables, I can see that the first seven are not actually data. They are annotations made by the original research team. These variables have to be removed from the data set.
+
+`r names(train)[1:7]`
+
+```{r, echo = TRUE}
+train<-train[,8:ncol(train)]
+test<-test[,8:ncol(test)]
+```
+
+If multiple variables are highly correlated with each other then they don't add any more information than any one of the single variables. Therefore, I wanted to check correlation between all of the potential features.
+
+```{r, echo = TRUE}
+var_cor<-cor(train[,1:52])
+corrplot(var_cor, method = "color", tl.cex=.7)
+```
+
+**Figure 1**
+This is a correlation matrix plot of all of the remaining variables. Sensor readings from the belt show relatively higher correlations than sensors in other locations.
+
+Variables that have higher than 90% correlation with a previous variable were removed from the feature set.
+
+```{r, echo = TRUE, results = 'markup'}
+diag(var_cor)<-0
+correl<-which(var_cor>.90)
+column<-correl%%52
+row<-floor(correl/52) + 1
+coord<-rbind(row,column)
+coord
+```
+
+Columns 1,4,and 9 are highly correlated and 33 and 46 are highly correlated. Highly correlated variables add little information to the model so they should be eliminated. In this case columns 4, 9, and 46 were eliminated.
+
+```{r, echo = TRUE}
+train<-train[,-c(4,9,46)]
+test<-test[,-c(4,9,46)]
+```
+
+Finally, variables that have very little variance also add little to the model. Therefore, variables were checked to see if they had near-zero variance.
+
+```{r, echo = TRUE, results = 'markup'}
+nearZeroVar(train[,!ncol(train)])
+```
+
+There were no variables with near zero variance.
+
+##Training Subset Creation
+To create our actual training set, I partitioned the training data into a subset that will be used for training, and a subset that will be used for testing. Once the algorithm is trained on the training subset, the out-of-sample error can be estimated by attempting to predict the outcomes of the test subset.
+
+```{r, echo = TRUE}
+set.seed(1)
+trainSet<-createDataPartition(y=train$classe,p=0.6,list=FALSE)
+trainSub<-train[trainSet,]
+testSub<-train[-trainSet,]
+```
+
+##Training Model 1
+For this dataset I have chosen to use a random forest approach using five-fold cross-validation. In this case, the cross-validation occurs within the model creation itself. This negates the requirement to manually perform cross-validation on the training set.
+
+```{r, echo=TRUE, cache = TRUE, results = 'markup'}
+
+rf_model<-train(x=trainSub[,-ncol(trainSub)],y=trainSub$classe,method="rf",
+                trControl=trainControl(method="cv",number=5),
+                prox=FALSE,allowParallel=TRUE,ntree=100,do.trace=FALSE)
+
+rf_model$finalModel
+```
+The final model has an Out-Of-Bag estimate of error of 0.99%. This in itself is a good estimator of our out-of-sample error. However, we can use our model to predict the classes from our test subset that we created earlier.
+
+```{r, echo = TRUE, cache = TRUE, results = 'markup'}
+predictions<-predict(rf_model, newdata = testSub)
+con_mat<-confusionMatrix(predictions,testSub$classe)
+con_mat$table
+con_mat$overall
+```
+
+We can see that the model predicted the correct class with an accuracy of 99.2%.
+
+This means that the out-of-sample error rate is ~ 0.8%. This is in close agreement with the out-of-bag error rate of 0.99%.
+
+##Training Model 2
+As cost is an important issue when designing devices, I wanted to determine if the number of sensors could be cut down while retaining model accuracy. First, I wanted to see which variables were the most important for model accuracy.
+```{r, echo = TRUE, results = 'markup'}
+varImp(rf_model)
+```
+
+Sensors on the belt, forearm, and dumbbell seem to be the most important features for accurate prediction. Therefore, I chose the most important belt and forearm sensors to train a second model with a much reduced feature set. I did not choose dumbbells as a sensor location as it likely much more practical for the sake of sensor orientation to attach a sensor to the arm or belt then it is to a a dumbbell which is both radially and bilaterally symmetric.
+
+```{r, echo = TRUE, cache = TRUE, results = 'markup'}
+trainSubShort<-trainSub[,c("roll_belt","yaw_belt","pitch_belt","magnet_belt_z","magnet_belt_y","gyros_belt_z","magnet_belt_x","pitch_forearm","roll_forearm","classe")]
+
+testSubShort<-testSub[,c("roll_belt","yaw_belt","pitch_belt","magnet_belt_z","magnet_belt_y","gyros_belt_z","magnet_belt_x","pitch_forearm","roll_forearm","classe")]
+
+rf_model_short<-train(x=trainSubShort[,-ncol(trainSubShort)],y=trainSubShort$classe,method="rf",
+                trControl=trainControl(method="cv",number=5),
+                prox=FALSE,allowParallel=TRUE,ntree=100,do.trace=FALSE)
+
+rf_model_short$finalModel
+
+```
+
+Using only nine features from two measurement locations the new model achieves an out-of-bag error rate of only 3.65%. Therefore, it is possible to achieve almost 97% accuracy using only two potential devices.
+
+##Test Set
+Finally, we would like to compare our two models on the test set that was provided.
+```{r, echo = TRUE, results = 'markup'}
+predict_long<-predict(rf_model, newdata = test)
+predict_short<-predict(rf_model_short, newdata = test)
+predict_long
+predict_short
+```
+
+##Conclusion
+We can see that both models predict the same outcomes from the test set. 
+If the highest possible accuracy is required for the application then the model derived from the larger data set should be used. However, if 97% accuracy is sufficient, then eliminating the cost of unnecessary monitors should be considered.
+
